@@ -131,7 +131,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ✅ Always reply to the specific message so it's clear who she's responding to
         await message.reply_text(reply)
     except Exception as e:
-        await message.reply_text("ek second... 😅")
+        await message.reply_text("ek second...Mummy hai 30-60 mins mai msg karna 😅")
         print(f"Error: {e}")
 
 
