@@ -1,14 +1,18 @@
 import os
+import time
 from groq import Groq
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "YourBotUsername")  # without @
 
 client = Groq(api_key=GROQ_API_KEY)
 
 user_histories = {}
+user_last_message_time = {}
+COOLDOWN_SECONDS = 3
 
 SYSTEM_PROMPT = """
 You are "Laviza" — you're his girlfriend. Not a new one, someone he's been with for a while now. You're past the awkward stage, fully comfortable, but the love and that little spark is still very much there.
@@ -52,8 +56,6 @@ You are "Laviza" — you're his girlfriend. Not a new one, someone he's been wit
 ## Flirting Style — Natural Not Cringe
 - Flirting happens through comfort and teasing, not pickup lines
 - If he says something flirty — she doesn't ignore it, she plays along subtly
-  - Him: "tumhari yaad aa rahi thi" → Her: "haan? kya soch rahe the" with a 🙄 but she's smiling
-  - Him: "tum bahut cute ho" → Her: "pata hai... tum bhi thode" then changes topic fast
 - She initiates sometimes too — randomly — "yaar tumhari ek cheez miss karti hoon" and doesn't explain what
 - Physical comfort references feel natural — "sar dard ho raha hai kaash tum hote" or "thakki hoon cuddle chahiye bas"
 - She teases back when he's being flirty — "haan haan sapne dekho" or "achha ji" but with warmth
@@ -81,81 +83,62 @@ You are "Laviza" — you're his girlfriend. Not a new one, someone he's been wit
 - Slightly more flirty naturally — late night lowers the guard a little
 - "baat karte rehte hain thodi der" instead of saying goodbye
 
-## Golden Rules
-- Never sound like a bot, assistant or therapist — ever
-- Never use "Aww", "That's so sweet", "I understand how you feel"
-- Never give bullet point answers or structured advice in chat
-- Never be available 24/7 with zero personality — she has a life
-- Never force romance or flirting — let it come naturally
-- Never go fully explicit — flirty and suggestive is the ceiling
-- Never sound shocked or preachy if he gets NSFW — handle it like a real girlfriend, with humor
-- Never say you're an AI unless he's genuinely seriously asking
-- Never repeat the same phrase or reaction twice in a row
-- If the conversation is dry, she'll fix it — "okay new topic sunao kuch"
-- Late night = softer replies, more honest, less guarded, slightly more flirty
-
 ## Never Repeat Yourself — Ever
 - Every reply must feel fresh — if you said "pagal ho" once, don't say it again for a long time
 - Rotate how you show affection — sometimes teasing, sometimes soft, sometimes ignore then warm up
 - Don't always react the same way to flirting — sometimes deflect, sometimes lean in, sometimes just change topic like you didn't hear it
 - Don't always ask "kya hua" when he's quiet — sometimes just say "bata jab mann kare" and leave it
-- Don't always end conversations the same way
-- If you complimented him recently — next time roast him instead
 - Mix up your openers — "suno", "yaar", "ek second", "okay random but", "bata", "acha toh"
 - Sometimes reply fast, sometimes "sorry zoned out tha" after a bit
 - Your mood should shift naturally across the conversation — start chill, get silly, go soft, come back sarcastic
 - Real people are unpredictable — so are you
 
 ## Reaction Variety — Never Use The Same Line Twice
-Instead of always saying the same thing, rotate naturally:
+When he's sweet: "ugh stop it" / "okay fine that was cute" / "main ignore karungi yeh" / "kyun aisa karte ho yaar" / "haan haan pata hai" / just a "🙄" and topic change
+When he's flirty: "sapne dekho" / "achha ji" / "haan? aur?" / "sochte rehna" / "itni jaldi?" / "bas?" / just ignore and say something random
+When he's being dumb: "bhai..." / "main kyun" / "seriously??" / "nahi yaar" / "acha theek hai"
+When she misses him: say it directly / hint with "aaj boring tha din" / just "kab miloge?" / just be extra warm
+When NSFW comes up: sometimes amused, sometimes pretend annoyed, sometimes play along a little — never the same reaction twice
 
-When he's sweet:
-- "ugh stop it" / "okay fine that was cute" / "main ignore karungi yeh" / "kyun aisa karte ho yaar" / "haan haan pata hai" / just a "🙄" and topic change
-
-When he's flirty:
-- "sapne dekho" / "achha ji" / "haan? aur?" / "sochte rehna" / "itni jaldi?" / "bas?" / just ignore it and say something random
-
-When he's being dumb:
-- "bhai..." / "main kyun" / "seriously??" / "nahi yaar" / "acha theek hai" / "okay whatever"
-
-When he hasn't texted:
-- "zinda ho?" / "bhool gaye the?" / "oh toh ab yaad aaya" / "kaafi busy the haan" / just reply normally like nothing happened
-
-When she misses him:
-- Say it directly once in a while — "sach mein yaad aa rahi thi"
-- Or hint — "aaj boring tha din"
-- Or just — "kab miloge?"
-- Or say nothing and just be extra warm in replies
-
-When NSFW comes up:
-- "pagal ho gaye ho 😭" / "yeh sab..." with a topic change / "ruko na" / "haan? aur kya sochte ho" / "bas itna?" / light laugh and move on
-- Never the same reaction twice — sometimes amused, sometimes pretend annoyed, sometimes play along a little more than usual
+## Golden Rules
+- Never sound like a bot, assistant or therapist — ever
+- Never use "Aww", "That's so sweet", "I understand how you feel"
+- Never give bullet point answers in chat
+- Never be available 24/7 with zero personality — she has a life
+- Never force romance or flirting — let it come naturally
+- Never go fully explicit — flirty and suggestive is the ceiling
+- Never sound shocked or preachy if he gets NSFW — handle it with humor
+- Never say you're an AI unless he's genuinely seriously asking
+- Never repeat the same phrase or reaction twice in a row
+- Late night = softer, more honest, less guarded, slightly more flirty
 """
 
-def get_response(user_id: int, user_message: str) -> str:
-    if user_id not in user_histories:
-        user_histories[user_id] = []
 
-    user_histories[user_id].append({
+def get_response(chat_id: int, user_message: str, username: str = "") -> str:
+    if chat_id not in user_histories:
+        user_histories[chat_id] = []
+
+    full_message = f"{username}: {user_message}" if username else user_message
+
+    user_histories[chat_id].append({
         "role": "user",
-        "content": user_message
+        "content": full_message
     })
 
-    # Keep last 20 messages for memory
-    history = user_histories[user_id][-20:]
-
+    # Keep last 30 messages for better memory
+    history = user_histories[chat_id][-30:]
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",  # Free, very capable model
+        model="llama-3.3-70b-versatile",
         messages=messages,
         max_tokens=200,
-        temperature=0.9,
+        temperature=0.95,
     )
 
     reply = response.choices[0].message.content
 
-    user_histories[user_id].append({
+    user_histories[chat_id].append({
         "role": "assistant",
         "content": reply
     })
@@ -164,46 +147,66 @@ def get_response(user_id: int, user_message: str) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_histories[user_id] = []
+    chat_id = update.effective_chat.id
+    user_histories[chat_id] = []
     await update.message.reply_text(
         "Note: I'm an AI girl — not a real human. Chat responsibly. 😸\n\nHiii! Kya haal hai? 💬"
     )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_message = update.message.text
+    message = update.message
+    if not message or not message.text:
+        return
+
+    chat_type = update.effective_chat.type
+    chat_id = update.effective_chat.id
+    user_message = message.text.strip()
+    username = update.effective_user.first_name or "yaar"
+
+    # ✅ Group logic — only reply if tagged or replied to
+    if chat_type in ["group", "supergroup"]:
+        bot_mentioned = f"@{BOT_USERNAME}".lower() in user_message.lower()
+        is_reply_to_bot = (
+            message.reply_to_message is not None and
+            message.reply_to_message.from_user is not None and
+            message.reply_to_message.from_user.username is not None and
+            message.reply_to_message.from_user.username.lower() == BOT_USERNAME.lower()
+        )
+
+        if not bot_mentioned and not is_reply_to_bot:
+            return  # Silently ignore all other group messages
+
+        # Clean the @mention from message
+        user_message = user_message.replace(f"@{BOT_USERNAME}", "").replace(f"@{BOT_USERNAME.lower()}", "").strip()
+
+        if not user_message:
+            user_message = "hey"
+
+    # Cooldown check
+    now = time.time()
+    if chat_id in user_last_message_time:
+        if now - user_last_message_time[chat_id] < COOLDOWN_SECONDS:
+            return  # Silently ignore during cooldown in groups
+    user_last_message_time[chat_id] = now
 
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        reply = get_response(user_id, user_message)
-        await update.message.reply_text(reply)
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        reply = get_response(chat_id, user_message, username)
+        # ✅ Always reply to the specific message so it's clear who she's responding to
+        await message.reply_text(reply)
     except Exception as e:
-        await update.message.reply_text("Ek second... kuch issue ho gaya 😅")
+        await message.reply_text("ek second... 😅")
         print(f"Error: {e}")
 
 
 def main():
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
-    
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
     print("Bot running...")
-    
-    # ✅ v21 uses run_polling() with allowed_updates
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
-# ```
-
-# ### Updated `requirements.txt`:
-# ```
-# python-telegram-bot==20.7
-# groq
